@@ -1,1 +1,2 @@
 scenedetect[opencv,progress_bar]
+tqdm

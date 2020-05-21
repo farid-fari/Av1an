@@ -2,6 +2,7 @@ import os
 import tempfile
 
 FFMPEG_COMMAND = "ffmpeg -y -v 8"
+SVT_COMMAND = "SvtAv1EncApp"
 TEMP_DIR = tempfile.mkdtemp(dir='./')
 print(f"Temporary directory {TEMP_DIR} created.")
 
@@ -12,22 +13,22 @@ class Command:
 
 
 class SplitFile(Command):
-    def __init__(self, input, splits):
+    def __init__(self, inFile, splits):
         super().__init__()
-        self.input = input
+        self.inFile = inFile
         self.splits = splits
 
         self.numParts = len(splits) + 1
-        self.sources = [self.input]
+        self.sources = [self.inFile]
         self.outputs = [os.path.join(TEMP_DIR, "split", f"{i:05}.mkv")
                         for i in range(self.numParts)]
 
     def makeCommand(self):
         r = "# SplitFile\n"
-        r += super().makeCommand()
+        r += " ".join(self.outputs) + " &: " + " ".join(self.sources) + "\n"
         r += f"\tmkdir -p {os.path.join(TEMP_DIR, 'split')}\n"
         r += (f"\t{FFMPEG_COMMAND} "
-              f"-i {self.input} "
+              f"-i {self.inFile} "
               "-map 0:v:0 -an -c copy "
               "-avoid_negative_ts 1 ")
         if self.splits:
@@ -43,11 +44,11 @@ class SplitFile(Command):
 
 
 class GetAudio(Command):
-    def __init__(self, input):
+    def __init__(self, inFile):
         super().__init__()
-        self.input = input
+        self.inFile = inFile
 
-        self.sources = [self.input]
+        self.sources = [self.inFile]
         self.outputs = [os.path.join(TEMP_DIR, "audio.mkv")]
 
     def makeCommand(self):
@@ -55,7 +56,7 @@ class GetAudio(Command):
         r += super().makeCommand()
         r += f"\tmkdir -p {TEMP_DIR}\n"
         r += (f"\t{FFMPEG_COMMAND} "
-              f"-i {self.input} -vn -c:a copy " +
+              f"-i {self.inFile} -vn -c:a copy " +
               self.outputs[0] + "\n")
         r += f"audio: {self.outputs[0]} ;\n"
         return r
@@ -67,7 +68,7 @@ class PasteFiles(Command):
         self.concatFile = "concat.txt"
         self.audioFile = os.path.join(TEMP_DIR, "audio.mkv")
 
-        self.sources = [os.path.join(TEMP_DIR, "split", f"{i:05}.mkv")
+        self.sources = [os.path.join(TEMP_DIR, "encode", f"{i:05}.ivf")
                         for i in range(self.numParts)] + [self.audioFile]
         self.sources += [os.path.join(TEMP_DIR, "check", f"{i:05}.match")
                          for i in range(self.numParts)]
@@ -76,13 +77,11 @@ class PasteFiles(Command):
     def makeCommand(self):
         r = "# PasteFiles\n"
         r += super().makeCommand()
-        r += (f"\tseq -f '%05g' 0 {self.numParts - 1} | "
-              r"""awk '{print "file '\''""" +
-              os.path.join(TEMP_DIR, 'split') + r"""/" $$1 ".mkv'\''"}' > """
+        r += ('\techo "$^" | sed -E "s/ /\\n/g" | grep -Ee ".ivf$$" | '
+              r"""awk '{print "file '\''" $$1 "'\''"}' > """
               f"{self.concatFile}\n")
         r += (f"\t{FFMPEG_COMMAND} -f concat -safe 0 -i {self.concatFile} "
-              f"-i {self.audioFile} -c:a copy -c copy "
-              f"{self.outputs[0]}\n")
+              f"-i {self.audioFile} -c:a copy -c copy {self.outputs[0]}\n")
         r += f"\trm -f {self.concatFile}\n"
         return r
 
@@ -96,18 +95,16 @@ class Prepare(Command):
     def __init__(self, splits):
         numParts = len(splits) + 1
         audioFile = os.path.join(TEMP_DIR, "audio.mkv")
-        self.sources = [os.path.join(TEMP_DIR, "split", f"{i:05}.mkv")
-                        for i in range(numParts)]
-        self.sources += [os.path.join(TEMP_DIR, "split", f"{i:05}.fc")
-                         for i in range(numParts)] + [audioFile]
+        self.sources = [os.path.join(TEMP_DIR, "split", f"{i:05}.fc")
+                        for i in range(numParts)] + [audioFile]
 
     def makeCommand(self):
         return "prepare: " + ' '.join(self.sources) + " ;\n"
 
 
 class FrameCount(Command):
-    def __init__(self, input, output):
-        self.sources = [input]
+    def __init__(self, inFile, output):
+        self.sources = [inFile]
         self.outputs = [output]
 
     def makeCommand(self):
@@ -127,16 +124,51 @@ class MatchFrames(Command):
     def makeCommand(self):
         r = f"# MatchFrames {self.sources[0]}\n"
         r += super().makeCommand()
-        r += "\tif ! cmp -s $^\n"
-        r += "\tthen\n"
-        r += '\t\techo "Error while verifying frame counts: $^."\n'
-        r += '\t\techo "You should try removing the encoded video."\n'
-        r += "\t\texit 2\n"
+        r += f"\tmkdir -p {os.path.join(TEMP_DIR, 'check')}\n"
+        r += "\tif ! cmp -s $^; then \\\n"
+        r += '\t\techo "Error while verifying frame counts: $^."; \\\n'
+        r += '\t\techo "You should try removing the encoded video."; \\\n'
+        r += "\t\tfalse; \\\n"
         r += "\tfi\n"
         r += "\ttouch $@\n"
         return r
 
 
 class Clean(Command):
+    def __init__(self, inFile):
+        self.inFile = inFile
+
     def makeCommand(self):
-        return f"clean:\n\trm -rf {TEMP_DIR}\n"
+        return (f"clean:\n\trm -rf {TEMP_DIR}\n"
+                "\trm -f output.fc verifyOutputFrames "
+                f"{os.path.splitext(self.inFile)[0]}.fc\n")
+
+
+class SVTEncodeFile(Command):
+    def __init__(self, width, height):
+        self.sources = [os.path.join(TEMP_DIR, "split", "%.mkv"),
+                        os.path.join(TEMP_DIR, "split", "%.fc")]
+        self.outputs = [os.path.join(TEMP_DIR, "encode", "%.ivf")]
+
+        self.width, self.height = width, height
+
+    def makeCommand(self):
+        r = "# SVTEncodeFile\n"
+        r += super().makeCommand()
+        r += f"\tmkdir -p {os.path.join(TEMP_DIR, 'encode')}\n"
+        r += (f"\t{FFMPEG_COMMAND} -i $< -strict 1 -pix_fmt yuv420p "
+              "-f yuv4mpegpipe - | "
+              f"{SVT_COMMAND} -i stdin --preset 8 "
+              f"-w {self.width} -h {self.height} "
+              "--tile-rows 2 --tile-columns 3 --output $@")
+
+        try:
+            import tqdm
+            r += (" 2>&1 >/dev/null | "
+                  r"stdbuf -i0 -o0 tr '\b' '\n' | "
+                  "stdbuf -i0 -o0 grep -Ee '[0-9]+$$' | "
+                  "tqdm --total $$(cat $(patsubst %.mkv,%.fc,$<)) > /dev/null")
+        except ModuleNotFoundError:
+            pass
+
+        return r + "\n"
