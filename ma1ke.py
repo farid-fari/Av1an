@@ -53,6 +53,8 @@ def main():
     parser.add_argument('--splits', default=None,
                         help='file containing the frames on which to split.\
  (default: [input].csv)')
+    parser.add_argument('--nvidia', action='store_true',
+                        help='use NVIDIA hardware acceleration (nvenc/dec)')
     parser.add_argument('--version', action='version', version='ma1ke v0.1')
     args = parser.parse_args()
 
@@ -108,7 +110,8 @@ def main():
 
         print(f"tempdir = {os.path.normpath(args.tempdir)}\n", file=fo)
 
-        print("ffmpegcommand = ffmpeg -y -v 8", file=fo)
+        hardwareDec = ' -hwaccel nvdec' if args.nvidia else ''
+        print("ffmpegcommand = ffmpeg -y -v 8{hardwareDec}", file=fo)
         print("svtexec = SvtAv1EncApp\n", file=fo)
 
         print(f"input = {os.path.normpath(args.input)}", file=fo)
