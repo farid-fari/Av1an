@@ -68,7 +68,7 @@ class PasteFiles(Command):
         self.concatFile = "concat.txt"
         self.audioFile = os.path.join(TEMP_DIR, "audio.mkv")
 
-        self.sources = [os.path.join(TEMP_DIR, "encode", f"{i:05}.ivf")
+        self.sources = [os.path.join(TEMP_DIR, "encode", f"{i:05}.mkv")
                         for i in range(self.numParts)] + [self.audioFile]
         self.sources += [os.path.join(TEMP_DIR, "check", f"{i:05}.match")
                          for i in range(self.numParts)]
@@ -77,11 +77,12 @@ class PasteFiles(Command):
     def makeCommand(self):
         r = "# PasteFiles\n"
         r += super().makeCommand()
-        r += ('\techo "$^" | sed -E "s/ /\\n/g" | grep -Ee ".ivf$$" | '
+        r += ('\techo "$^" | sed -E "s/ /\\n/g" | grep -Ee ".mkv$$" | '
+              'grep -Ev "audio.mkv$$" | '
               r"""awk '{print "file '\''" $$1 "'\''"}' > """
               f"{self.concatFile}\n")
         r += (f"\t{FFMPEG_COMMAND} -f concat -safe 0 -i {self.concatFile} "
-              f"-i {self.audioFile} -c:a copy -c copy {self.outputs[0]}\n")
+              f"-i {self.audioFile} -c copy {self.outputs[0]}\n")
         r += f"\trm -f {self.concatFile}\n"
         return r
 
@@ -130,7 +131,7 @@ class MatchFrames(Command):
         r += '\t\techo "You should try removing the encoded video."; \\\n'
         r += "\t\tfalse; \\\n"
         r += "\tfi\n"
-        r += "\ttouch $@\n"
+        r += "\tcp $< $@\n"
         return r
 
 
@@ -148,7 +149,7 @@ class SVTEncodeFile(Command):
     def __init__(self, width, height):
         self.sources = [os.path.join(TEMP_DIR, "split", "%.mkv"),
                         os.path.join(TEMP_DIR, "split", "%.fc")]
-        self.outputs = [os.path.join(TEMP_DIR, "encode", "%.ivf")]
+        self.outputs = [os.path.join(TEMP_DIR, "encode", "%.mkv")]
 
         self.width, self.height = width, height
 
@@ -172,3 +173,18 @@ class SVTEncodeFile(Command):
             pass
 
         return r + "\n"
+
+
+class HEVCEncodeFile(Command):
+    def __init__(self):
+        self.sources = [os.path.join(TEMP_DIR, "split", "%.mkv"), ]
+                        # os.path.join(TEMP_DIR, "split", "%.fc")]
+        self.outputs = [os.path.join(TEMP_DIR, "encode", "%.mkv")]
+
+    def makeCommand(self):
+        r = "# HEVCEncodeFile\n"
+        r += super().makeCommand()
+        r += f"\tmkdir -p {os.path.join(TEMP_DIR, 'encode')}\n"
+        r += (f"\t{FFMPEG_COMMAND} -hwaccel nvdec -i $< -c:v hevc_nvenc "
+              "-crf 28 $@\n")
+        return r
