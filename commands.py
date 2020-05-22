@@ -1,10 +1,9 @@
 import os
-import tempfile
 
-FFMPEG_COMMAND = "ffmpeg -y -v 8"
-SVT_COMMAND = "SvtAv1EncApp"
-TEMP_DIR = tempfile.mkdtemp(dir='./')
-print(f"Temporary directory {TEMP_DIR} created.")
+FFMPEG_COMMAND = "$(ffmpegcommand)"
+INPUT = "$(input)"
+SVT_COMMAND = "$(svtexec)"
+TEMP_DIR = "$(tempdir)"
 
 
 class Command:
@@ -13,13 +12,12 @@ class Command:
 
 
 class SplitFile(Command):
-    def __init__(self, inFile, splits):
+    def __init__(self, splits):
         super().__init__()
-        self.inFile = inFile
         self.splits = splits
 
         self.numParts = len(splits) + 1
-        self.sources = [self.inFile]
+        self.sources = [INPUT]
         self.outputs = [os.path.join(TEMP_DIR, "split", f"{i:05}.mkv")
                         for i in range(self.numParts)]
 
@@ -28,7 +26,7 @@ class SplitFile(Command):
         r += " ".join(self.outputs) + " &: " + " ".join(self.sources) + "\n"
         r += f"\tmkdir -p {os.path.join(TEMP_DIR, 'split')}\n"
         r += (f"\t{FFMPEG_COMMAND} "
-              f"-i {self.inFile} "
+              f"-i {INPUT} "
               "-map 0:v:0 -an -c copy "
               "-avoid_negative_ts 1 ")
         if self.splits:
@@ -44,11 +42,10 @@ class SplitFile(Command):
 
 
 class GetAudio(Command):
-    def __init__(self, inFile):
+    def __init__(self):
         super().__init__()
-        self.inFile = inFile
 
-        self.sources = [self.inFile]
+        self.sources = [INPUT]
         self.outputs = [os.path.join(TEMP_DIR, "audio.mkv")]
 
     def makeCommand(self):
@@ -56,7 +53,7 @@ class GetAudio(Command):
         r += super().makeCommand()
         r += f"\tmkdir -p {TEMP_DIR}\n"
         r += (f"\t{FFMPEG_COMMAND} "
-              f"-i {self.inFile} -vn -c:a copy " +
+              f"-i {INPUT} -vn -c:a copy " +
               self.outputs[0] + "\n")
         r += f"audio: {self.outputs[0]} ;\n"
         return r
@@ -117,13 +114,14 @@ class FrameCount(Command):
         return r
 
 
-class MatchFrames(Command):
-    def __init__(self, name, frames1, frames2):
-        self.sources = [frames1, frames2]
-        self.outputs = [name]
+class MatchEncodedFrames(Command):
+    def __init__(self):
+        self.sources = [os.path.join(TEMP_DIR, "split", "%.fc"),
+                        os.path.join(TEMP_DIR, "encode", "%.fc")]
+        self.outputs = [os.path.join(TEMP_DIR, "check", "%.match")]
 
     def makeCommand(self):
-        r = f"# MatchFrames {self.sources[0]}\n"
+        r = "# MatchFrames\n"
         r += super().makeCommand()
         r += f"\tmkdir -p {os.path.join(TEMP_DIR, 'check')}\n"
         r += "\tif ! cmp -s $^; then \\\n"
@@ -135,32 +133,43 @@ class MatchFrames(Command):
         return r
 
 
-class Clean(Command):
-    def __init__(self, inFile):
-        self.inFile = inFile
+class MatchOutputFrames(Command):
+    def makeCommand(self):
+        r = "# MatchOutputFrames\n"
+        r += "verifyOutputFrames: $(inframes) $(outframes)\n"
+        r += "\tif ! cmp -s $^; then \\\n"
+        r += '\t\techo "Error while verifying output frame count!"; \\\n'
+        r += "\t\tfalse; \\\n"
+        r += "\tfi\n"
+        return r
 
+
+class Clean(Command):
     def makeCommand(self):
         return (f"clean:\n\trm -rf {TEMP_DIR}\n"
-                "\trm -f output.fc verifyOutputFrames "
-                f"{os.path.splitext(self.inFile)[0]}.fc\n")
+                "\trm -f output.fc verifyOutputFrames $(inframes)")
 
 
 class SVTEncodeFile(Command):
-    def __init__(self, width, height):
+    def __init__(self):
         self.sources = [os.path.join(TEMP_DIR, "split", "%.mkv"),
                         os.path.join(TEMP_DIR, "split", "%.fc")]
         self.outputs = [os.path.join(TEMP_DIR, "encode", "%.mkv")]
-
-        self.width, self.height = width, height
 
     def makeCommand(self):
         r = "# SVTEncodeFile\n"
         r += super().makeCommand()
         r += f"\tmkdir -p {os.path.join(TEMP_DIR, 'encode')}\n"
+        r += ("\t$(eval height = $(shell ffprobe $(input) 2>&1 >/dev/null | "
+              "grep -Eoe "
+              r"'[0-9]+x[0-9]+,' | sed -E 's/([0-9]+)x.*/\1/'))")
+        r += ("$(eval width = $(shell ffprobe $(input) 2>&1 >/dev/null | "
+              "grep -Eoe "
+              r"'[0-9]+x[0-9]+,' | sed -E 's/.*x([0-9]+).*/\1/'))")
         r += (f"\t{FFMPEG_COMMAND} -i $< -strict 1 -pix_fmt yuv420p "
               "-f yuv4mpegpipe - | "
               f"{SVT_COMMAND} -i stdin --preset 8 "
-              f"-w {self.width} -h {self.height} "
+              f"-w $(width) -h $(height) "
               "--tile-rows 2 --tile-columns 3 --output $@")
 
         try:
@@ -178,7 +187,7 @@ class SVTEncodeFile(Command):
 class HEVCEncodeFile(Command):
     def __init__(self):
         self.sources = [os.path.join(TEMP_DIR, "split", "%.mkv"), ]
-                        # os.path.join(TEMP_DIR, "split", "%.fc")]
+        #                os.path.join(TEMP_DIR, "split", "%.fc")]
         self.outputs = [os.path.join(TEMP_DIR, "encode", "%.mkv")]
 
     def makeCommand(self):

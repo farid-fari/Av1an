@@ -4,12 +4,16 @@
 
 Example with default parameters:
 
+```bash
     python ma1ke.py -i input.mp4
     make
+```
 
 Easy, built-in parallelism:
 
+```bash
     make -j 4 # Run 4 encodes at a time
+```
 
 Automatic resuming whe interrupted, progress bar for AV1 encodes.
 
