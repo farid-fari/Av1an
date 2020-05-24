@@ -101,9 +101,6 @@ def main():
             total = videoManager.get_duration()[0]
             total = total.get_frames()
 
-            with args.input.with_suffix('.fc').open('w') as f:
-                print(total, file=f)
-
             splits = [str(i*total//args.splits) for i in range(1, args.splits)]
         else:
             splits = sceneDetect(args.input, args.splits)

@@ -130,12 +130,11 @@ class MatchEncodedFrames(Command):
         r += '\t\tcat $^ | tr "\\n" " "; echo; \\\n'
         r += echo("You can try, in the following order:")
         r += echo("\t\t- recounting the encoded frames with "
-                  "'make recount-out-$*'")
+                  "'make recount-$*'")
         r += echo("\t\t- reencoding this file with "
-                  "'rm $(patsubst %.fc,%.mkv,$<)'")
-        r += echo("\t\t- reencoding and recoding the source with "
-                  "'make redo-$*'")
-        r += echo("\t\t- restarting everyting 'make clean'")
+                  "'make reencode-%'")
+        r += echo("\t\t- restarting the split and encode with 'make split'")
+        r += echo("\t\t- restarting everything with 'make clean'")
         r += "\t\tfalse; \\\n"
         r += "\tfi\n"
         r += "\tcp $< $@"
@@ -159,7 +158,7 @@ class MatchOutputFrames(Command):
         r += echo("You can try, in the following order:")
         r += echo("\t\t- recounting the output frames with "
                   "'make recount-output'")
-        r += echo("\t\t- repasting with 'make repaste'")
+        r += echo("\t\t- repasting with 'make paste'")
         r += echo("\t\t- restarting everything with 'make clean'")
         r += "\t\tfalse; \\\n"
         r += "\tfi"
@@ -210,17 +209,7 @@ class HEVCEncodeFile(Command):
         r += super().makeCommand()
         r += f"\t@mkdir -p {os.path.join(TEMP_DIR, 'encode')}\n"
         codec = 'hevc_nvenc' if self.nvidia else 'hevc'
-        r += (f"\t{FFMPEG_COMMAND} -v 32 -i $< -c:v {codec} $@")
-
-        # try:
-        #     import tqdm
-        #     r += (" 2>&1 >/dev/null | "
-        #           r"stdbuf -i0 -o0 tr '\r' '\n' | "
-        #           "stdbuf -i0 -o0 grep -Ee '^frame=' | "
-        #           "tqdm --total $$(cat $(patsubst %.mkv,%.fc,$<))>/dev/null")
-        # except ModuleNotFoundError:
-        #     r += " 2> /dev/null"
-        r += " 2> /dev/null"
+        r += f"\t{FFMPEG_COMMAND} -i $< -c:v {codec} $@"
 
         return r
 

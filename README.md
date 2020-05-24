@@ -2,6 +2,8 @@
 
 ## A simple, barebones tool for parallelized AV1/HEVC encoding
 
+## WARNING: highly WIP, probably only works on Arch Linux
+
 Example with default parameters:
 
 ```bash
@@ -16,7 +18,8 @@ Customizable encoding parameters, and easy, built-in parallelism:
     make -f Makefile.input -j 4 				# Run 4 encodes at a time
 ```
 
-Automatic resuming whe interrupted, progress bar for AV1 encodes.
+Automatic resuming when interrupted, multithreading, and progress bar for AV1
+encodes.
 
 ## Requirements
 
@@ -31,6 +34,7 @@ Automatic resuming whe interrupted, progress bar for AV1 encodes.
 The python script will generate a makefile, which you can use with GNU make to
 encode your video. For a simple case, the only argument you will want to
 specify is `-e hevc` if you want an HEVC encode or `-e av1` for AV1.
+
 
 ```
 usage: ma1ke.py [-h] [--tempdir TEMPDIR] [-o OUTPUT] [-e {av1,hevc}]
@@ -64,3 +68,16 @@ encodes you want to allow.
 
 **NOTE**: if using `make` version lower than `4.3`, you should first run `make
 split` **without the `-j` argument**, and only then run the command above.
+
+### Input splitting
+
+The `--splitsfile` indicates where the splitting locations should be saved and
+restored. The default is next to your input file, with the `.csv` extension
+instead. If the file exists, the splits will be read from there.
+
+If the file doesn't exist, you will need for *PySceneDetect* to be installed
+(see requirements). You can either split the file evenly with `--splits`, or
+let *PySceneDetect* detect scene changes to split on.
+
+Scene detection can take a while, in which case it is recommended to use the
+`--splits` option. For no splits, specify `--splits 0`.
