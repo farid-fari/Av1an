@@ -2,8 +2,10 @@ import os
 
 FFMPEG_COMMAND = "$(ffmpegcommand)"
 INPUT = "$(input)"
+OUTPUT = "$(output)"
 SVT_COMMAND = "$(svtexec)"
 TEMP_DIR = "$(tempdir)"
+NAMED_PIPE = os.path.join(TEMP_DIR, "progressPipe")
 
 
 class Command:
@@ -19,24 +21,21 @@ class SplitFile(Command):
         self.numParts = len(splits) + 1
         self.sources = [INPUT]
         self.outputs = [os.path.join(TEMP_DIR, "split", f"{i:05}.mkv")
-                        for i in range(self.numParts)]
+                        for i in range(self.numParts)] + ["split"]
 
     def makeCommand(self):
         r = "# SplitFile\n"
         r += " ".join(self.outputs) + " &: " + " ".join(self.sources) + "\n"
-        r += f"\tmkdir -p {os.path.join(TEMP_DIR, 'split')}\n"
+        r += f"\t@mkdir -p {os.path.join(TEMP_DIR, 'split')}\n"
         r += (f"\t{FFMPEG_COMMAND} "
-              f"-i {INPUT} "
-              "-map 0:v:0 -an -c copy "
-              "-avoid_negative_ts 1 ")
+              "-i $< -an -c:v copy -avoid_negative_ts 1 ")
+
         if self.splits:
             r += "-f segment -segment_frames " +\
                  ','.join(str(e) for e in self.splits) + " "
-            r += os.path.join(TEMP_DIR, "split", "%05d.mkv") + "\n"
+            r += os.path.join(TEMP_DIR, "split", "%05d.mkv")
         else:
-            r += os.path.join(TEMP_DIR, "split", "00000.mkv") + "\n"
-
-        r += f"split: {' '.join(self.outputs)} ;\n"
+            r += os.path.join(TEMP_DIR, "split", "00000.mkv")
 
         return r
 
@@ -46,16 +45,13 @@ class GetAudio(Command):
         super().__init__()
 
         self.sources = [INPUT]
-        self.outputs = [os.path.join(TEMP_DIR, "audio.mkv")]
+        self.outputs = [os.path.join(TEMP_DIR, "audio.mkv"), "audio"]
 
     def makeCommand(self):
         r = "# GetAudio\n"
         r += super().makeCommand()
-        r += f"\tmkdir -p {TEMP_DIR}\n"
-        r += (f"\t{FFMPEG_COMMAND} "
-              f"-i {INPUT} -vn -c:a copy " +
-              self.outputs[0] + "\n")
-        r += f"audio: {self.outputs[0]} ;\n"
+        r += f"\t@mkdir -p {TEMP_DIR}\n"
+        r += f"\t{FFMPEG_COMMAND} -i $< -vn -c:a copy {self.outputs[0]}"
         return r
 
 
@@ -69,7 +65,7 @@ class PasteFiles(Command):
                         for i in range(self.numParts)] + [self.audioFile]
         self.sources += [os.path.join(TEMP_DIR, "check", f"{i:05}.match")
                          for i in range(self.numParts)]
-        self.outputs = ["output.mkv"]
+        self.outputs = [OUTPUT]
 
     def makeCommand(self):
         r = "# PasteFiles\n"
@@ -80,13 +76,13 @@ class PasteFiles(Command):
               f"{self.concatFile}\n")
         r += (f"\t{FFMPEG_COMMAND} -f concat -safe 0 -i {self.concatFile} "
               f"-i {self.audioFile} -c copy {self.outputs[0]}\n")
-        r += f"\trm -f {self.concatFile}\n"
+        r += f"\trm -f {self.concatFile}"
         return r
 
 
 class All(Command):
     def makeCommand(self):
-        return "all: verifyOutputFrames ;\n"
+        return "all: verifyOutputFrames"
 
 
 class Prepare(Command):
@@ -97,7 +93,7 @@ class Prepare(Command):
                         for i in range(numParts)] + [audioFile]
 
     def makeCommand(self):
-        return "prepare: " + ' '.join(self.sources) + " ;\n"
+        return "prepare: " + ' '.join(self.sources)
 
 
 class FrameCount(Command):
@@ -108,92 +104,179 @@ class FrameCount(Command):
     def makeCommand(self):
         r = f"# FrameCount {self.sources[0]}\n"
         r += super().makeCommand()
-        r += (f"\t{FFMPEG_COMMAND} -v 32 -i $< -map 0:v:0 "
-              "-c copy -f null - 2>&1 >/dev/null | grep -e '^frame=' | "
-              r'sed -E "s/frame=\s*([0-9]+)\s.*/\1/" > $@' '\n')
+        r += (f"\t{FFMPEG_COMMAND} -v 32 -i $< -an "
+              r"-c:v copy -f null - 2>&1 >/dev/null | tr '\r' '\n' | "
+              "grep -e '^frame=' | "
+              "tail -n 1 | "
+              r'sed -E "s/frame=\s*([0-9]+)\s.*/\1/" > $@')
         return r
 
 
 class MatchEncodedFrames(Command):
     def __init__(self):
-        self.sources = [os.path.join(TEMP_DIR, "split", "%.fc"),
-                        os.path.join(TEMP_DIR, "encode", "%.fc")]
+        self.sources = [os.path.join(TEMP_DIR, "encode", "%.fc"),
+                        os.path.join(TEMP_DIR, "split", "%.fc")]
         self.outputs = [os.path.join(TEMP_DIR, "check", "%.match")]
 
     def makeCommand(self):
         r = "# MatchFrames\n"
         r += super().makeCommand()
-        r += f"\tmkdir -p {os.path.join(TEMP_DIR, 'check')}\n"
-        r += "\tif ! cmp -s $^; then \\\n"
-        r += '\t\techo "Error while verifying frame counts: $^."; \\\n'
-        r += '\t\techo "You should try removing the encoded video."; \\\n'
+        r += f"\t@mkdir -p {os.path.join(TEMP_DIR, 'check')}\n"
+        r += "\t@if ! cmp -s $^; then \\\n"
+
+        def echo(s):
+            return f'\t\techo "{s}"; \\\n'
+        r += echo("Error while verifying frame counts for $*:")
+        r += '\t\tcat $^ | tr "\\n" " "; echo; \\\n'
+        r += echo("You can try, in the following order:")
+        r += echo("\t\t- recounting the encoded frames with "
+                  "'make recount-out-$*'")
+        r += echo("\t\t- reencoding this file with "
+                  "'rm $(patsubst %.fc,%.mkv,$<)'")
+        r += echo("\t\t- reencoding and recoding the source with "
+                  "'make redo-$*'")
+        r += echo("\t\t- restarting everyting 'make clean'")
         r += "\t\tfalse; \\\n"
         r += "\tfi\n"
-        r += "\tcp $< $@\n"
+        r += "\tcp $< $@"
         return r
 
 
 class MatchOutputFrames(Command):
+    def __init__(self):
+        self.sources = ["$(inframes)", "$(outframes)"]
+        self.outputs = ["verifyOutputFrames"]
+
     def makeCommand(self):
         r = "# MatchOutputFrames\n"
-        r += "verifyOutputFrames: $(inframes) $(outframes)\n"
-        r += "\tif ! cmp -s $^; then \\\n"
-        r += '\t\techo "Error while verifying output frame count!"; \\\n'
+        r += super().makeCommand()
+        r += "\t@if ! cmp -s $^; then \\\n"
+
+        def echo(s):
+            return f'\t\techo "{s}"; \\\n'
+        r += echo("Error while verifying the output frame count.")
+        r += '\t\tcat $^ | tr "\\n" " "; echo; \\\n'
+        r += echo("You can try, in the following order:")
+        r += echo("\t\t- recounting the output frames with "
+                  "'make recount-output'")
+        r += echo("\t\t- repasting with 'make repaste'")
+        r += echo("\t\t- restarting everything with 'make clean'")
         r += "\t\tfalse; \\\n"
-        r += "\tfi\n"
+        r += "\tfi"
         return r
 
 
 class Clean(Command):
     def makeCommand(self):
-        return (f"clean:\n\trm -rf {TEMP_DIR}\n"
-                "\trm -f output.fc verifyOutputFrames $(inframes)")
+        return f"clean:\n\trm -rf {TEMP_DIR}"
 
 
 class SVTEncodeFile(Command):
     def __init__(self):
         self.sources = [os.path.join(TEMP_DIR, "split", "%.mkv"),
-                        os.path.join(TEMP_DIR, "split", "%.fc")]
+                        NAMED_PIPE, 'tqdm']
         self.outputs = [os.path.join(TEMP_DIR, "encode", "%.mkv")]
 
     def makeCommand(self):
         r = "# SVTEncodeFile\n"
         r += super().makeCommand()
-        r += f"\tmkdir -p {os.path.join(TEMP_DIR, 'encode')}\n"
-        r += ("\t$(eval height = $(shell ffprobe $(input) 2>&1 >/dev/null | "
+        r += f"\t@mkdir -p {os.path.join(TEMP_DIR, 'encode')}\n"
+        r += ("\theight=$$(ffprobe $< 2>&1 >/dev/null | "
               "grep -Eoe "
-              r"'[0-9]+x[0-9]+,' | sed -E 's/([0-9]+)x.*/\1/'))")
-        r += ("$(eval width = $(shell ffprobe $(input) 2>&1 >/dev/null | "
+              r"'[0-9]+x[0-9]+,' | sed -E 's/([0-9]+)x.*/\1/')" ";\\\n")
+        r += ("\twidth=$$(ffprobe $< 2>&1 >/dev/null | "
               "grep -Eoe "
-              r"'[0-9]+x[0-9]+,' | sed -E 's/.*x([0-9]+).*/\1/'))")
+              r"'[0-9]+x[0-9]+,' | sed -E 's/.*x([0-9]+).*/\1/')" ";\\\n")
         r += (f"\t{FFMPEG_COMMAND} -i $< -strict 1 -pix_fmt yuv420p "
               "-f yuv4mpegpipe - | "
               f"{SVT_COMMAND} -i stdin --preset 8 "
-              f"-w $(width) -h $(height) "
+              f"-w $$width -h $$height "
               "--tile-rows 2 --tile-columns 3 --output $@")
+        r += (" 2>&1 >/dev/null | "
+              r"stdbuf -i0 -o0 tr '\b' '\n' | "
+              "stdbuf -i0 -o0 grep -Ee '[0-9]+$$' > $(word 2,$^)")
 
-        try:
-            import tqdm
-            r += (" 2>&1 >/dev/null | "
-                  r"stdbuf -i0 -o0 tr '\b' '\n' | "
-                  "stdbuf -i0 -o0 grep -Ee '[0-9]+$$' | "
-                  "tqdm --total $$(cat $(patsubst %.mkv,%.fc,$<)) > /dev/null")
-        except ModuleNotFoundError:
-            pass
-
-        return r + "\n"
+        return r
 
 
 class HEVCEncodeFile(Command):
-    def __init__(self):
-        self.sources = [os.path.join(TEMP_DIR, "split", "%.mkv"), ]
-        #                os.path.join(TEMP_DIR, "split", "%.fc")]
+    def __init__(self, nvidia=False):
+        self.sources = [os.path.join(TEMP_DIR, "split", "%.mkv")]
         self.outputs = [os.path.join(TEMP_DIR, "encode", "%.mkv")]
+        self.nvidia = nvidia
 
     def makeCommand(self):
         r = "# HEVCEncodeFile\n"
         r += super().makeCommand()
-        r += f"\tmkdir -p {os.path.join(TEMP_DIR, 'encode')}\n"
-        r += (f"\t{FFMPEG_COMMAND} -hwaccel nvdec -i $< -c:v hevc_nvenc "
-              "-crf 28 $@\n")
+        r += f"\t@mkdir -p {os.path.join(TEMP_DIR, 'encode')}\n"
+        codec = 'hevc_nvenc' if self.nvidia else 'hevc'
+        r += (f"\t{FFMPEG_COMMAND} -v 32 -i $< -c:v {codec} $@")
+
+        # try:
+        #     import tqdm
+        #     r += (" 2>&1 >/dev/null | "
+        #           r"stdbuf -i0 -o0 tr '\r' '\n' | "
+        #           "stdbuf -i0 -o0 grep -Ee '^frame=' | "
+        #           "tqdm --total $$(cat $(patsubst %.mkv,%.fc,$<))>/dev/null")
+        # except ModuleNotFoundError:
+        #     r += " 2> /dev/null"
+        r += " 2> /dev/null"
+
+        return r
+
+
+class VMAF(Command):
+    def __init__(self):
+        self.sources = [OUTPUT, INPUT, "verifyOutputFrames"]
+        self.outputs = ["$(vmaf)"]
+
+    def makeCommand(self):
+        r = "# VMAF\n"
+        r += super().makeCommand()
+        r += (f"\t{FFMPEG_COMMAND} -i $(word 2,$^) -r 60 -i $< "
+              '-filter_complex "[0:v]scale=-1:1080:flags=spline[scaled1];'
+              '[1:v]scale=-1:1080:flags=spline[scaled2];'
+              '[scaled2][scaled1]libvmaf=log_path=$@" -f null -')
+        return r
+
+
+class Recount(Command):
+    def __init__(self):
+        self.sources = []
+        self.outputs = ["recount-%"]
+
+    def makeCommand(self):
+        r = "# Recount\n"
+        r += super().makeCommand()
+
+        targs = ' '.join([
+            os.path.join(TEMP_DIR, 'split', '$*.fc'),
+            os.path.join(TEMP_DIR, 'encode', '$*.fc')])
+
+        r += f"\trm -f {targs}\n"
+        r += f"\t$(MAKE) {targs}"
+        return r
+
+
+class Tqdm(Command):
+    def __init__(self):
+        self.sources = ["$(inframes)", NAMED_PIPE]
+        self.outputs = ['tqdm']
+
+    def makeCommand(self):
+        r = "# Tqdm\n"
+        r += super().makeCommand()
+        r += "\ttqdm --total $$(cat $<) < $(word 2,$^) > /dev/null &"
+        return r
+
+
+class NamedPipe(Command):
+    def __init__(self):
+        self.sources = []
+        self.outputs = [NAMED_PIPE]
+
+    def makeCommand(self):
+        r = "# NamedPipe\n"
+        r += super().makeCommand()
+        r += "\tmkfifo $@"
         return r
