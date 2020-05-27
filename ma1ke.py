@@ -57,14 +57,33 @@ def main():
     parser.add_argument('--version', action='version', version='ma1ke v0.1')
     args = parser.parse_args()
 
+    if args.tempdir is None:
+        dir = args.input.parent
+        dir = dir if os.path.exists(dir) else Path('./')
+        args.tempdir = Path(tempfile.mkdtemp(dir=dir))
+        args.tempdir.rmdir()
+
     if not args.input.exists():
         warn("Your input file does not exist, you will have to"
              " create it before you run make.", category=RuntimeWarning)
 
+    # Ridding input of spaces, parenthesis
     if " " in (s := str(args.input)) or '(' in s or ')' in s:
         warn("Input file contains a dangerous character. Creating a safe "
              "symlink here.")
-        f, newFile = tempfile.mkstemp(suffix=args.input.suffix, dir='./')
+        f, newFile = tempfile.mkstemp(suffix=args.input.suffix,
+                                      dir=args.tempdir)
+        os.close(f)
+        newFile = Path(newFile).relative_to(Path.cwd())
+        newFile.unlink()
+        newFile.symlink_to(args.input)
+        args.input = newFile
+
+    # Ridding output of spaces, parenthesis
+    if " " in (s := str(args.output)) or '(' in s or ')' in s:
+        warn("Output file contains a dangerous character. Creating a safe "
+             "symlink and copy rule.")
+        f, newFile = tempfile.mkstemp(suffix=args.output.suffix, dir='./')
         os.close(f)
         newFile = Path(newFile).relative_to(Path.cwd())
         newFile.unlink()
@@ -73,12 +92,6 @@ def main():
 
     if args.input.resolve() == args.output.resolve():
         warn("Output and input filenames refer to the same file.")
-
-    if args.tempdir is None:
-        dir = args.input.parent
-        dir = dir if os.path.exists(dir) else Path('./')
-        args.tempdir = Path(tempfile.mkdtemp(dir=dir))
-        args.tempdir.rmdir()
 
     if args.tempdir.exists() and args.tempdir.iterdir():
         warn("Temporary directory not empty: files may be overwritten.")
@@ -113,7 +126,7 @@ def main():
         Clean(),
         Prepare(splits),
         NamedPipe(),
-        Tqdm(),
+        Tqdm(splits),
         VMAF(),
         GetAudio(),
         SplitFile(splits),

@@ -200,7 +200,8 @@ class SVTEncodeFile(Command):
 
 class HEVCEncodeFile(Command):
     def __init__(self, nvidia=False):
-        self.sources = [os.path.join(TEMP_DIR, "split", "%.mkv")]
+        self.sources = [os.path.join(TEMP_DIR, "split", "%.mkv"),
+                        NAMED_PIPE, 'tqdm']
         self.outputs = [os.path.join(TEMP_DIR, "encode", "%.mkv")]
         self.nvidia = nvidia
 
@@ -209,7 +210,14 @@ class HEVCEncodeFile(Command):
         r += super().makeCommand()
         r += f"\t@mkdir -p {os.path.join(TEMP_DIR, 'encode')}\n"
         codec = 'hevc_nvenc' if self.nvidia else 'hevc'
-        r += f"\t{FFMPEG_COMMAND} -i $< -c:v {codec} $@"
+        r += f"\t{FFMPEG_COMMAND} -v 32 -i $< -c:v {codec} $@"
+        r += (" 2>&1 >/dev/null | "
+              r"stdbuf -i0 -o0 tr '\r' '\n' | "
+              "stdbuf -i0 -o0 grep -Ee '^frame=' | "
+              r"stdbuf -i0 -o0 sed -E 's/frame=\s+([0-9]+)\s.*/\1/' | "
+              r"""stdbuf -i0 -o0 awk '{print "$*\t" $$1}' """
+              "> $(word 2,$^)\n")
+        r += '\techo -e "$*\\tdone"'
 
         return r
 
@@ -248,14 +256,18 @@ class Recount(Command):
 
 
 class Tqdm(Command):
-    def __init__(self):
+    def __init__(self, splits):
         self.sources = ["$(inframes)", NAMED_PIPE]
         self.outputs = ['tqdm']
+        self.fnames = [f"{i:05}" for i in range(len(splits) + 1)]
 
     def makeCommand(self):
         r = "# Tqdm\n"
         r += super().makeCommand()
-        r += "\ttqdm --total $$(cat $<) < $(word 2,$^) > /dev/null &"
+        r += "\t./progress.py $$(cat $<) $(word 2,$^) &\n"
+        r += f"\t@for fname in {' '.join(self.fnames)}; do \\\n"
+        r += '\t\techo -e "$$fname\\t0" > $(word 2,$^); \\\n'
+        r += '\tdone'
         return r
 
 
