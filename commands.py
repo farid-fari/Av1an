@@ -5,7 +5,7 @@ INPUT = "$(input)"
 OUTPUT = "$(output)"
 SVT_COMMAND = "$(svtexec)"
 TEMP_DIR = "$(tempdir)"
-NAMED_PIPE = os.path.join(TEMP_DIR, "progressPipe")
+NAMED_PIPE = "$(namedpipe)"
 
 
 class Command:
@@ -170,12 +170,14 @@ class Clean(Command):
         return f"clean:\n\trm -rf {TEMP_DIR}"
 
 
-class SVTEncodeFile(Command):
+class Encoder(Command):
     def __init__(self):
         self.sources = [os.path.join(TEMP_DIR, "split", "%.mkv"),
                         NAMED_PIPE, 'tqdm']
         self.outputs = [os.path.join(TEMP_DIR, "encode", "%.mkv")]
 
+
+class SVTEncodeFile(Encoder):
     def makeCommand(self):
         r = "# SVTEncodeFile\n"
         r += super().makeCommand()
@@ -198,11 +200,32 @@ class SVTEncodeFile(Command):
         return r
 
 
-class HEVCEncodeFile(Command):
+class Rav1eEncodeFile(Encoder):
+    def makeCommand(self):
+        r = "# Rav1eEncodeFile\n"
+        r += super().makeCommand()
+        r += f"\t@mkdir -p {os.path.join(TEMP_DIR, 'encode')}\n"
+        r += ("\theight=$$(ffprobe $< 2>&1 >/dev/null | "
+              "grep -Eoe "
+              r"'[0-9]+x[0-9]+,' | sed -E 's/([0-9]+)x.*/\1/')" ";\\\n")
+        r += ("\twidth=$$(ffprobe $< 2>&1 >/dev/null | "
+              "grep -Eoe "
+              r"'[0-9]+x[0-9]+,' | sed -E 's/.*x([0-9]+).*/\1/')" ";\\\n")
+        r += (f"\t{FFMPEG_COMMAND} -i $< -strict 1 -pix_fmt yuv420p "
+              "-f yuv4mpegpipe - | "
+              f"{SVT_COMMAND} -i stdin --preset 8 "
+              f"-w $$width -h $$height "
+              "--tile-rows 2 --tile-columns 3 --output $@")
+        r += (" 2>&1 >/dev/null | "
+              r"stdbuf -i0 -o0 tr '\b' '\n' | "
+              "stdbuf -i0 -o0 grep -Ee '[0-9]+$$' > $(word 2,$^)")
+
+        return r
+
+
+class HEVCEncodeFile(Encoder):
     def __init__(self, nvidia=False):
-        self.sources = [os.path.join(TEMP_DIR, "split", "%.mkv"),
-                        NAMED_PIPE, 'tqdm']
-        self.outputs = [os.path.join(TEMP_DIR, "encode", "%.mkv")]
+        super().__init__()
         self.nvidia = nvidia
 
     def makeCommand(self):
@@ -217,7 +240,7 @@ class HEVCEncodeFile(Command):
               r"stdbuf -i0 -o0 sed -E 's/frame=\s+([0-9]+)\s.*/\1/' | "
               r"""stdbuf -i0 -o0 awk '{print "$*\t" $$1}' """
               "> $(word 2,$^)\n")
-        r += '\techo -e "$*\\tdone"'
+        r += '\t@echo -e "$*\\tdone" > $(word 2,$^)'
 
         return r
 
@@ -259,15 +282,12 @@ class Tqdm(Command):
     def __init__(self, splits):
         self.sources = ["$(inframes)", NAMED_PIPE]
         self.outputs = ['tqdm']
-        self.fnames = [f"{i:05}" for i in range(len(splits) + 1)]
+        self.nProc = len(splits) + 1
 
     def makeCommand(self):
         r = "# Tqdm\n"
         r += super().makeCommand()
-        r += "\t./progress.py $$(cat $<) $(word 2,$^) &\n"
-        r += f"\t@for fname in {' '.join(self.fnames)}; do \\\n"
-        r += '\t\techo -e "$$fname\\t0" > $(word 2,$^); \\\n'
-        r += '\tdone'
+        r += f"\t./progress.py $$(cat $<) {self.nProc} < $(word 2,$^) &"
         return r
 
 
