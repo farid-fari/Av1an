@@ -64,6 +64,9 @@ def main():
         args.tempdir = Path(tempfile.mkdtemp(dir=dir))
         args.tempdir.rmdir()
 
+    if args.tempdir.exists() and args.tempdir.iterdir():
+        warn("Temporary directory not empty: files may be overwritten.")
+
     if not args.input.exists():
         warn("Your input file does not exist, you will have to"
              " create it before you run make.", category=RuntimeWarning)
@@ -72,18 +75,20 @@ def main():
     if " " in (s := str(args.input)) or '(' in s or ')' in s:
         warn("Input file contains a dangerous character. Creating a safe "
              "symlink here.")
+        args.tempdir.mkdir(parents=True, exist_ok=True)
         f, newFile = tempfile.mkstemp(suffix=args.input.suffix,
                                       dir=args.tempdir)
         os.close(f)
         newFile = Path(newFile).relative_to(Path.cwd())
         newFile.unlink()
-        newFile.symlink_to(args.input)
+        newFile.symlink_to(args.input.resolve())
         args.input = newFile
 
     # Ridding output of spaces, parenthesis
     if " " in (s := str(args.output)) or '(' in s or ')' in s:
         warn("Output file contains a dangerous character. Creating a safe "
              "symlink and copy rule.")
+        # TODO: doesn't create copy rule (and symlink??)
         f, newFile = tempfile.mkstemp(suffix=args.output.suffix, dir='./')
         os.close(f)
         newFile = Path(newFile).relative_to(Path.cwd())
@@ -93,9 +98,6 @@ def main():
 
     if args.input.resolve() == args.output.resolve():
         warn("Output and input filenames refer to the same file.")
-
-    if args.tempdir.exists() and args.tempdir.iterdir():
-        warn("Temporary directory not empty: files may be overwritten.")
 
     if args.splitsfile is None:
         args.splitsfile = args.input.with_suffix('.csv')
@@ -156,7 +158,8 @@ def main():
 
         hardwareDec = ' -hwaccel nvdec' if args.nvidia else ''
         print(f"ffmpegcommand = ffmpeg -y -v 8{hardwareDec}", file=fo)
-        print("svtexec = SvtAv1EncApp\n", file=fo)
+        print("svtexec = SvtAv1EncApp", file=fo)
+        print("rav1eexec = rav1e\n", file=fo)
 
         print(f'input = {os.path.normpath(args.input)}', file=fo)
         print(f'output = {os.path.normpath(args.output)}', file=fo)
@@ -164,6 +167,10 @@ def main():
               file=fo)
 
         print(".INTERMEDIATE: $(namedpipe)\n", file=fo)
+
+        progScript = Path(__file__).resolve().parent
+        progScript /= "progress.py"
+        print(f'progressscript = {progScript}\n', file=fo)
 
         inframes = os.path.join("$(tempdir)",
                                 Path(args.input.name).with_suffix(".fc"))

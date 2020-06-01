@@ -4,6 +4,7 @@ FFMPEG_COMMAND = "$(ffmpegcommand)"
 INPUT = "$(input)"
 OUTPUT = "$(output)"
 SVT_COMMAND = "$(svtexec)"
+RAV1E_COMMAND = "$(rav1eexec)"
 TEMP_DIR = "$(tempdir)"
 NAMED_PIPE = "$(namedpipe)"
 
@@ -192,8 +193,8 @@ class SVTEncodeFile(Encoder):
               "-f yuv4mpegpipe - | "
               f"{SVT_COMMAND} -i stdin --preset 8 "
               f"-w $$width -h $$height "
-              "--tile-rows 2 --tile-columns 3 --output $@")
-        r += (" 2>&1 >/dev/null | "
+              "--tile-rows 2 --tile-columns 3 --output $@ ")
+        r += ("2>&1 >/dev/null | "
               r"stdbuf -i0 -o0 tr '\b' '\n' | "
               "stdbuf -i0 -o0 grep -Ee '[0-9]+$$' > $(word 2,$^)")
 
@@ -205,18 +206,11 @@ class Rav1eEncodeFile(Encoder):
         r = "# Rav1eEncodeFile\n"
         r += super().makeCommand()
         r += f"\t@mkdir -p {os.path.join(TEMP_DIR, 'encode')}\n"
-        r += ("\theight=$$(ffprobe $< 2>&1 >/dev/null | "
-              "grep -Eoe "
-              r"'[0-9]+x[0-9]+,' | sed -E 's/([0-9]+)x.*/\1/')" ";\\\n")
-        r += ("\twidth=$$(ffprobe $< 2>&1 >/dev/null | "
-              "grep -Eoe "
-              r"'[0-9]+x[0-9]+,' | sed -E 's/.*x([0-9]+).*/\1/')" ";\\\n")
         r += (f"\t{FFMPEG_COMMAND} -i $< -strict 1 -pix_fmt yuv420p "
               "-f yuv4mpegpipe - | "
-              f"{SVT_COMMAND} -i stdin --preset 8 "
-              f"-w $$width -h $$height "
-              "--tile-rows 2 --tile-columns 3 --output $@")
-        r += (" 2>&1 >/dev/null | "
+              f"{RAV1E_COMMAND} -i stdin "
+              "--tile-rows 4 --tile-cols 8 -o $@ ")
+        r += ("2>&1 >/dev/null | "
               r"stdbuf -i0 -o0 tr '\b' '\n' | "
               "stdbuf -i0 -o0 grep -Ee '[0-9]+$$' > $(word 2,$^)")
 
@@ -287,7 +281,7 @@ class Tqdm(Command):
     def makeCommand(self):
         r = "# Tqdm\n"
         r += super().makeCommand()
-        r += f"\t./progress.py $$(cat $<) {self.nProc} < $(word 2,$^) &"
+        r += f"\t$(progressscript) $$(cat $<) {self.nProc} < $(word 2,$^) &"
         return r
 
 
